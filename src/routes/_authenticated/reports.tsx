@@ -22,6 +22,7 @@ import {
 import { BarChart3, Download, Gauge, DollarSign, TrendingUp, Fuel } from "lucide-react";
 import { currency, num } from "@/lib/domain";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
+import type { TripWithRelations } from "@/lib/data";
 
 export const Route = createFileRoute("/_authenticated/reports")({
   component: Reports,
@@ -34,6 +35,25 @@ const tooltipStyle = {
   color: "oklch(0.96 0.01 240)",
   fontSize: 12,
 };
+
+const MONTH_LABELS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** Reads whichever completion-ish timestamp the trip record actually carries. */
+function tripDate(t: TripWithRelations): string | null {
+  const meta = t as unknown as { completed_at?: string; updated_at?: string; created_at?: string };
+  return meta.completed_at ?? meta.updated_at ?? meta.created_at ?? null;
+}
+
+/** Reads the trip's own revenue field (collected at creation time). */
+function tripRevenue(t: TripWithRelations): number {
+  const meta = t as unknown as { revenue?: number | string };
+  return Number(meta.revenue ?? 0);
+}
+
+const RANK_COLOR = ["bg-destructive", "bg-warning", "bg-primary"];
 
 function Reports() {
   const { data: vehicles = [] } = useVehicles();
@@ -91,10 +111,42 @@ function Reports() {
     : 0;
   const totalRevenue = rows.reduce((s, r) => s + r.revenue, 0);
   const fleetRoi = totalRevenue - totalOpCost;
+  const avgRoiPercent = rows.length
+    ? rows.reduce((s, r) => s + r.roi, 0) / rows.length
+    : 0;
 
-  const chartData = rows
-    .filter((r) => r.opCost > 0 || r.revenue > 0)
-    .map((r) => ({ name: r.name, cost: Math.round(r.opCost), revenue: Math.round(r.revenue) }));
+  // Monthly revenue trend, last 7 months, from completed trips' own revenue + date.
+  const monthlyRevenue = useMemo(() => {
+    const now = new Date();
+    const buckets = Array.from({ length: 7 }).map((_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - (6 - i), 1);
+      return { key: `${d.getFullYear()}-${d.getMonth()}`, label: MONTH_LABELS[d.getMonth()], revenue: 0 };
+    });
+
+    trips
+      .filter((t) => t.status === "Completed")
+      .forEach((t) => {
+        const iso = tripDate(t);
+        if (!iso) return;
+        const d = new Date(iso);
+        const key = `${d.getFullYear()}-${d.getMonth()}`;
+        const bucket = buckets.find((b) => b.key === key);
+        if (bucket) bucket.revenue += tripRevenue(t);
+      });
+
+    return buckets;
+  }, [trips]);
+  const hasMonthlyData = monthlyRevenue.some((b) => b.revenue > 0);
+
+  const costliestVehicles = useMemo(
+    () =>
+      [...rows]
+        .filter((r) => r.opCost > 0)
+        .sort((a, b) => b.opCost - a.opCost)
+        .slice(0, 5),
+    [rows],
+  );
+  const maxCostliest = costliestVehicles[0]?.opCost ?? 0;
 
   return (
     <div>
@@ -128,73 +180,87 @@ function Reports() {
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <KpiCard
-          label="Avg Fuel Efficiency"
-          value={`${num(avgEfficiency, 2)}`}
-          hint="km / liter"
+          label="Fuel Efficiency"
+          value={`${num(avgEfficiency, 1)} km/l`}
           icon={<Fuel className="h-5 w-5" />}
           accent="info"
         />
         <KpiCard
           label="Fleet Utilization"
           value={`${num(utilization, 0)}%`}
-          hint="Vehicles in use"
           icon={<Gauge className="h-5 w-5" />}
-          accent="primary"
+          accent="success"
         />
         <KpiCard
           label="Operational Cost"
-          value={currency(totalOpCost)}
-          hint="Fuel + maintenance + expenses"
+          value={num(totalOpCost, 0)}
           icon={<DollarSign className="h-5 w-5" />}
           accent="warning"
         />
         <KpiCard
-          label="Net Fleet ROI"
-          value={currency(fleetRoi)}
-          hint="Revenue − operational cost"
+          label="Vehicle ROI"
+          value={`${num(avgRoiPercent, 1)}%`}
           icon={<TrendingUp className="h-5 w-5" />}
-          accent={fleetRoi >= 0 ? "success" : "destructive"}
+          accent={avgRoiPercent >= 0 ? "success" : "destructive"}
         />
       </div>
 
-      <Card className="glass mt-6 p-5">
-        <h3 className="font-display font-semibold">Revenue vs Operational Cost per Vehicle</h3>
-        <div className="mt-4 h-72">
-          {chartData.length ? (
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={chartData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="oklch(0.3 0.04 256)"
-                  vertical={false}
-                />
-                <XAxis dataKey="name" stroke="oklch(0.68 0.03 250)" fontSize={12} />
-                <YAxis stroke="oklch(0.68 0.03 250)" fontSize={12} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  cursor={{ fill: "oklch(0.62 0.19 250 / 0.08)" }}
-                />
-                <Bar
-                  dataKey="revenue"
-                  name="Revenue"
-                  radius={[6, 6, 0, 0]}
-                  fill="oklch(0.72 0.16 165)"
-                />
-                <Bar
-                  dataKey="cost"
-                  name="Op. Cost"
-                  radius={[6, 6, 0, 0]}
-                  fill="oklch(0.8 0.15 80)"
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="grid h-full place-items-center text-sm text-muted-foreground">
-              Complete trips and log costs to see analytics.
-            </div>
-          )}
-        </div>
-      </Card>
+      <p className="mt-3 text-xs text-muted-foreground">
+        ROI = (Revenue − (Maintenance + Fuel)) / Acquisition Cost
+      </p>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+        <Card className="glass p-5">
+          <h3 className="font-display font-semibold">Monthly Revenue</h3>
+          <div className="mt-4 h-64">
+            {hasMonthlyData ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={monthlyRevenue}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.3 0.04 256)" vertical={false} />
+                  <XAxis dataKey="label" stroke="oklch(0.68 0.03 250)" fontSize={12} />
+                  <YAxis stroke="oklch(0.68 0.03 250)" fontSize={12} />
+                  <Tooltip
+                    contentStyle={tooltipStyle}
+                    cursor={{ fill: "oklch(0.62 0.19 250 / 0.08)" }}
+                    formatter={(value: number) => currency(value)}
+                  />
+                  <Bar dataKey="revenue" name="Revenue" radius={[6, 6, 0, 0]} fill="oklch(0.62 0.19 250)" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="grid h-full place-items-center text-sm text-muted-foreground">
+                Complete trips with revenue logged to see the monthly trend.
+              </div>
+            )}
+          </div>
+        </Card>
+
+        <Card className="glass p-5">
+          <h3 className="font-display font-semibold">Top Costliest Vehicles</h3>
+          <div className="mt-5 space-y-4">
+            {costliestVehicles.length === 0 ? (
+              <div className="grid h-40 place-items-center text-sm text-muted-foreground">
+                Log fuel, maintenance, or expenses to rank vehicles by cost.
+              </div>
+            ) : (
+              costliestVehicles.map((r, i) => (
+                <div key={r.id} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-mono font-medium">{r.name}</span>
+                    <span className="text-muted-foreground tabular">{currency(r.opCost)}</span>
+                  </div>
+                  <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${RANK_COLOR[i] ?? "bg-primary"}`}
+                      style={{ width: `${maxCostliest ? (r.opCost / maxCostliest) * 100 : 0}%` }}
+                    />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
 
       <Card className="glass mt-6 overflow-hidden">
         <div className="p-4">

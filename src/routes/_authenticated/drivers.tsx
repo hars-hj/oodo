@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { useDrivers, downloadCsv } from "@/hooks/useFleet";
+import { useDrivers } from "@/hooks/useFleet";
 import { useAuth } from "@/hooks/useAuth";
 import { saveDriver, deleteDriver } from "@/lib/data";
-import { PageHeader, StatusBadge, EmptyState } from "@/components/shared";
+import { EmptyState } from "@/components/shared";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -43,7 +43,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Users, Plus, Search, Pencil, Trash2, Download, TriangleAlert } from "lucide-react";
+import { Users, Plus, Pencil, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   DRIVER_STATUSES,
@@ -51,7 +51,10 @@ import {
   REGIONS,
   isLicenseExpired,
   type Driver,
+  type DriverStatus,
 } from "@/lib/domain";
+import { cn } from "@/lib/utils";
+import { supabase } from "@/integrations/supabase/client";
 
 export const Route = createFileRoute("/_authenticated/drivers")({
   component: Drivers,
@@ -68,6 +71,28 @@ const blank = {
   region: "North",
 };
 
+const STATUS_PILL: Record<string, string> = {
+  Available: "bg-emerald-500 text-white",
+  "On Trip": "bg-blue-500 text-white",
+  "Off Duty": "bg-gray-400 text-white",
+  Suspended: "bg-orange-500 text-white",
+};
+
+const TOGGLE_STATUSES: DriverStatus[] = ["Available", "On Trip", "Off Duty", "Suspended"];
+
+function StatusPill({ status }: { status: string }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex w-24 items-center justify-center rounded-md px-3 py-1 text-xs font-semibold",
+        STATUS_PILL[status] ?? "bg-muted text-muted-foreground",
+      )}
+    >
+      {status}
+    </span>
+  );
+}
+
 function Drivers() {
   const { roles } = useAuth();
   const canWrite = roles.includes("fleet_manager") || roles.includes("admin");
@@ -76,12 +101,14 @@ function Drivers() {
     !roles.includes("fleet_manager") &&
     !roles.includes("admin");
   const canEdit = canWrite || isSafetyOfficer;
+
   const { data: drivers = [], isLoading } = useDrivers();
   const qc = useQueryClient();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Driver | null>(null);
   const [form, setForm] = useState<Record<string, unknown>>(blank);
+  const [selected, setSelected] = useState<string | null>(null);
 
   const save = useMutation({
     mutationFn: (d: Record<string, unknown>) =>
@@ -93,6 +120,7 @@ function Drivers() {
     },
     onError: (e) => toast.error(e instanceof Error ? e.message : "Failed"),
   });
+
   const remove = useMutation({
     mutationFn: (id: string) => deleteDriver(id),
     onSuccess: () => {
@@ -102,10 +130,26 @@ function Drivers() {
     onError: (e) => toast.error(e instanceof Error ? e.message : "Failed"),
   });
 
+  const toggleStatus = useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: DriverStatus }) => {
+      const { error } = await supabase.from("drivers").update({ status }).eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["drivers"] });
+      toast.success("Status updated");
+      setSelected(null);
+    },
+    onError: (e) => toast.error(e instanceof Error ? e.message : "Failed"),
+  });
+
   const filtered = useMemo(
     () =>
       drivers.filter((d) =>
-        [d.name, d.license_number, d.region].join(" ").toLowerCase().includes(search.toLowerCase()),
+        [d.name, d.license_number, d.region]
+          .join(" ")
+          .toLowerCase()
+          .includes(search.toLowerCase()),
       ),
     [drivers, search],
   );
@@ -131,158 +175,119 @@ function Drivers() {
   }
 
   return (
-    <div>
-      <PageHeader
-        title="Driver Management"
-        subtitle="Profiles, licenses and safety compliance."
-        icon={<Users className="h-5 w-5" />}
-        actions={
-          <>
-            <Button
-              variant="outline"
-              onClick={() =>
-                downloadCsv(
-                  "drivers.csv",
-                  drivers.map(({ id, created_by, ...r }) => r),
-                )
-              }
-              disabled={!drivers.length}
-            >
-              <Download className="mr-1.5 h-4 w-4" /> Export
-            </Button>
-            <Dialog open={open} onOpenChange={setOpen}>
-              {canWrite && (
-                <DialogTrigger asChild>
-                  <Button onClick={openNew} className="glow">
-                    <Plus className="mr-1.5 h-4 w-4" /> Add Driver
-                  </Button>
-                </DialogTrigger>
-              )}
-              <DialogContent>
-                <DialogHeader>
-                  <DialogTitle>{editing ? "Edit Driver" : "Add Driver"}</DialogTitle>
-                </DialogHeader>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="Full Name">
-                    <Input
-                      disabled={isSafetyOfficer}
-                      value={form.name as string}
-                      onChange={(e) => setForm({ ...form, name: e.target.value })}
-                      placeholder="Alex Rivera"
-                    />
-                  </Field>
-                  <Field label="License Number">
-                    <Input
-                      value={form.license_number as string}
-                      onChange={(e) => setForm({ ...form, license_number: e.target.value })}
-                      placeholder="DL-889231"
-                    />
-                  </Field>
-                  <Field label="License Category">
-                    <Select
-                      value={form.license_category as string}
-                      onValueChange={(v) => setForm({ ...form, license_category: v })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {LICENSE_CATEGORIES.map((t) => (
-                          <SelectItem key={t} value={t}>
-                            {t}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="License Expiry">
-                    <Input
-                      type="date"
-                      value={form.license_expiry as string}
-                      onChange={(e) => setForm({ ...form, license_expiry: e.target.value })}
-                    />
-                  </Field>
-                  <Field label="Contact Number">
-                    <Input
-                      disabled={isSafetyOfficer}
-                      value={form.contact_number as string}
-                      onChange={(e) => setForm({ ...form, contact_number: e.target.value })}
-                      placeholder="+1 555 0100"
-                    />
-                  </Field>
-                  <Field label="Safety Score">
-                    <Input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={form.safety_score as number}
-                      onChange={(e) => setForm({ ...form, safety_score: Number(e.target.value) })}
-                    />
-                  </Field>
-                  <Field label="Region">
-                    <Select
-                      disabled={isSafetyOfficer}
-                      value={form.region as string}
-                      onValueChange={(v) => setForm({ ...form, region: v })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {REGIONS.map((t) => (
-                          <SelectItem key={t} value={t}>
-                            {t}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Status">
-                    <Select
-                      disabled={isSafetyOfficer}
-                      value={form.status as string}
-                      onValueChange={(v) => setForm({ ...form, status: v })}
-                    >
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {DRIVER_STATUSES.map((t) => (
-                          <SelectItem key={t} value={t}>
-                            {t}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                </div>
-                <DialogFooter>
-                  <Button variant="ghost" onClick={() => setOpen(false)}>
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={() => save.mutate(editing ? { ...form, id: editing.id } : form)}
-                    disabled={save.isPending || !form.name || !form.license_number}
-                  >
-                    Save
-                  </Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-          </>
-        }
-      />
-
-      <div className="relative mb-4 max-w-sm">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+    <div className="space-y-4">
+      {/* Top bar */}
+      <div className="flex items-center justify-between gap-3">
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search drivers..."
-          className="pl-9"
+          className="h-9 max-w-xs"
         />
+        {canWrite && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button onClick={openNew} className="glow">
+                <Plus className="mr-1.5 h-4 w-4" /> Add Driver
+              </Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{editing ? "Edit Driver" : "Add Driver"}</DialogTitle>
+              </DialogHeader>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Full Name">
+                  <Input
+                    disabled={isSafetyOfficer}
+                    value={form.name as string}
+                    onChange={(e) => setForm({ ...form, name: e.target.value })}
+                    placeholder="Alex Rivera"
+                  />
+                </Field>
+                <Field label="License Number">
+                  <Input
+                    value={form.license_number as string}
+                    onChange={(e) => setForm({ ...form, license_number: e.target.value })}
+                    placeholder="DL-889231"
+                  />
+                </Field>
+                <Field label="License Category">
+                  <Select
+                    value={form.license_category as string}
+                    onValueChange={(v) => setForm({ ...form, license_category: v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {LICENSE_CATEGORIES.map((t) => (
+                        <SelectItem key={t} value={t}>{t}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="License Expiry">
+                  <Input
+                    type="date"
+                    value={form.license_expiry as string}
+                    onChange={(e) => setForm({ ...form, license_expiry: e.target.value })}
+                  />
+                </Field>
+                <Field label="Contact Number">
+                  <Input
+                    disabled={isSafetyOfficer}
+                    value={form.contact_number as string}
+                    onChange={(e) => setForm({ ...form, contact_number: e.target.value })}
+                    placeholder="+1 555 0100"
+                  />
+                </Field>
+                <Field label="Safety Score">
+                  <Input
+                    type="number"
+                    min={0}
+                    max={100}
+                    value={form.safety_score as number}
+                    onChange={(e) => setForm({ ...form, safety_score: Number(e.target.value) })}
+                  />
+                </Field>
+                <Field label="Region">
+                  <Select
+                    disabled={isSafetyOfficer}
+                    value={form.region as string}
+                    onValueChange={(v) => setForm({ ...form, region: v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {REGIONS.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field label="Status">
+                  <Select
+                    disabled={isSafetyOfficer}
+                    value={form.status as string}
+                    onValueChange={(v) => setForm({ ...form, status: v })}
+                  >
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {DRIVER_STATUSES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button
+                  onClick={() => save.mutate(editing ? { ...form, id: editing.id } : form)}
+                  disabled={save.isPending || !form.name || !form.license_number}
+                >
+                  Save
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
+      {/* Table */}
       <Card className="glass overflow-hidden">
         {isLoading ? (
           <div className="p-10 text-center text-sm text-muted-foreground">Loading…</div>
@@ -296,53 +301,69 @@ function Drivers() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>License</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Expiry</TableHead>
-                <TableHead className="text-right">Safety</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Driver</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">License No</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Category</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Expiry</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Contact</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Safety</TableHead>
+                <TableHead className="uppercase text-xs tracking-wider">Status</TableHead>
+                {canEdit && <TableHead />}
               </TableRow>
             </TableHeader>
             <TableBody>
               {filtered.map((d) => {
                 const expired = isLicenseExpired(d.license_expiry);
+                const isSelected = selected === d.id;
                 return (
-                  <TableRow key={d.id}>
+                  <TableRow
+                    key={d.id}
+                    className={cn(
+                      "cursor-pointer transition-colors",
+                      isSelected && "bg-primary/10",
+                    )}
+                    onClick={() => setSelected(isSelected ? null : d.id)}
+                  >
                     <TableCell className="font-medium">{d.name}</TableCell>
                     <TableCell className="font-mono text-muted-foreground">
                       {d.license_number}
                     </TableCell>
                     <TableCell>{d.license_category}</TableCell>
                     <TableCell>
-                      <span
-                        className={
-                          expired
-                            ? "flex items-center gap-1 text-destructive"
-                            : "text-muted-foreground"
-                        }
-                      >
-                        {expired && <TriangleAlert className="h-3.5 w-3.5" />}
-                        {d.license_expiry ?? "—"}
+                      <span className={expired ? "font-medium text-destructive" : "text-muted-foreground"}>
+                        {d.license_expiry
+                          ? new Date(d.license_expiry).toLocaleDateString("en-US", { month: "2-digit", year: "numeric" })
+                          : "—"}
+                        {expired && " EXPIRE"}
                       </span>
                     </TableCell>
-                    <TableCell className="text-right tabular">{Number(d.safety_score)}</TableCell>
-                    <TableCell>
-                      <StatusBadge status={d.status} />
+                    <TableCell className="text-muted-foreground">
+                      {d.contact_number
+                        ? d.contact_number.slice(0, 5) + "xxxxx"
+                        : "—"}
                     </TableCell>
-                    <TableCell className="text-right">
-                      {canEdit || canWrite ? (
+                    <TableCell>{Number(d.safety_score)}%</TableCell>
+                    <TableCell>
+                      <StatusPill status={d.status} />
+                    </TableCell>
+                    {canEdit && (
+                      <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          {canEdit && (
-                            <Button variant="ghost" size="icon" onClick={() => openEdit(d)}>
-                              <Pencil className="h-4 w-4" />
-                            </Button>
-                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={(e) => { e.stopPropagation(); openEdit(d); }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
                           {canWrite && (
                             <AlertDialog>
                               <AlertDialogTrigger asChild>
-                                <Button variant="ghost" size="icon">
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
                                   <Trash2 className="h-4 w-4 text-destructive" />
                                 </Button>
                               </AlertDialogTrigger>
@@ -363,10 +384,8 @@ function Drivers() {
                             </AlertDialog>
                           )}
                         </div>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">—</span>
-                      )}
-                    </TableCell>
+                      </TableCell>
+                    )}
                   </TableRow>
                 );
               })}
@@ -374,6 +393,35 @@ function Drivers() {
           </Table>
         )}
       </Card>
+
+      {/* Toggle Status section */}
+      {selected && canEdit && (
+        <div className="space-y-2">
+          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+            Toggle status
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {TOGGLE_STATUSES.map((s) => (
+              <button
+                key={s}
+                onClick={() => toggleStatus.mutate({ id: selected, status: s })}
+                disabled={toggleStatus.isPending}
+                className={cn(
+                  "rounded-md px-4 py-1.5 text-xs font-semibold transition-opacity hover:opacity-90 disabled:opacity-50",
+                  STATUS_PILL[s],
+                )}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Rule hint */}
+      <p className="text-xs text-amber-500/80">
+        Rule: Expired license or Suspended status → blocked from trip assignment
+      </p>
     </div>
   );
 }

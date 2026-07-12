@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useVehicles, useDrivers, useTrips } from "@/hooks/useFleet";
-import { KpiCard, PageHeader } from "@/components/shared";
+import { PageHeader, StatusBadge } from "@/components/shared";
 import { Card } from "@/components/ui/card";
 import {
   Select,
@@ -16,34 +16,67 @@ import {
   Truck,
   CircleCheck,
   Wrench,
-  RouteIcon,
+  Route as RouteIcon,
   Clock,
   Users,
   Gauge,
 } from "lucide-react";
 import {
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
   BarChart,
   Bar,
   XAxis,
   YAxis,
-  Tooltip,
-  CartesianGrid,
+  Cell,
 } from "recharts";
 
 export const Route = createFileRoute("/_authenticated/dashboard")({
   component: Dashboard,
 });
 
-const COLORS = [
-  "oklch(0.62 0.19 250)",
-  "oklch(0.7 0.15 210)",
-  "oklch(0.8 0.15 80)",
-  "oklch(0.6 0.02 256)",
-];
+const STATUS_COLORS: Record<string, string> = {
+  Available: "oklch(0.6 0.18 145)",
+  "On Trip": "oklch(0.62 0.19 250)",
+  "In Shop": "oklch(0.75 0.18 75)",
+  Retired: "oklch(0.55 0.02 256)",
+};
+
+const ACCENT_MAP: Record<string, string> = {
+  primary: "text-primary bg-primary/12 ring-primary/25",
+  success: "text-success bg-success/12 ring-success/25",
+  warning: "text-warning bg-warning/12 ring-warning/25",
+  info: "text-info bg-info/12 ring-info/25",
+};
+
+function StatCard({
+  label,
+  value,
+  icon,
+  accent = "primary",
+}: {
+  label: string;
+  value: React.ReactNode;
+  icon?: React.ReactNode;
+  accent?: "primary" | "success" | "warning" | "info";
+}) {
+  return (
+    <Card className="glass flex flex-col gap-3 p-5">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground leading-tight">
+          {label}
+        </p>
+        {icon && (
+          <div
+            className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ring-1 ${ACCENT_MAP[accent]}`}
+          >
+            {icon}
+          </div>
+        )}
+      </div>
+      <p className="font-display text-4xl font-bold tabular-nums">{value}</p>
+    </Card>
+  );
+}
 
 function Dashboard() {
   const { data: vehicles = [] } = useVehicles();
@@ -71,16 +104,21 @@ function Dashboard() {
   const utilization = nonRetired ? (activeVehicles / nonRetired) * 100 : 0;
   const activeTrips = trips.filter((t) => t.status === "Dispatched").length;
   const pendingTrips = trips.filter((t) => t.status === "Draft").length;
-  const onDuty = drivers.filter((d) => d.status === "On Trip" || d.status === "Available").length;
+  const onDuty = drivers.filter(
+    (d) => d.status === "On Trip" || d.status === "Available",
+  ).length;
 
-  const statusData = VEHICLE_STATUSES.map((s) => ({
+  const statusBarData = VEHICLE_STATUSES.map((s) => ({
     name: s,
     value: fv.filter((v) => v.status === s).length,
-  })).filter((d) => d.value > 0);
-  const tripData = ["Draft", "Dispatched", "Completed", "Cancelled"].map((s) => ({
-    name: s,
-    trips: trips.filter((t) => t.status === s).length,
   }));
+
+  const recentTrips = [...trips]
+    .sort(
+      (a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+    )
+    .slice(0, 5);
 
   return (
     <div>
@@ -90,154 +128,200 @@ function Dashboard() {
         icon={<LayoutDashboard className="h-5 w-5" />}
         actions={
           <div className="flex flex-wrap gap-2">
-            <FilterSelect label="Type" value={type} onChange={setType} options={VEHICLE_TYPES} />
+            <FilterSelect
+              label="Vehicle Type"
+              value={type}
+              onChange={setType}
+              options={VEHICLE_TYPES}
+            />
             <FilterSelect
               label="Status"
               value={status}
               onChange={setStatus}
               options={VEHICLE_STATUSES}
             />
-            <FilterSelect label="Region" value={region} onChange={setRegion} options={REGIONS} />
+            <FilterSelect
+              label="Region"
+              value={region}
+              onChange={setRegion}
+              options={REGIONS}
+            />
           </div>
         }
       />
 
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard
+      {/* KPI Row — 2 cols on mobile, 4 on tablet, 7 on wide */}
+      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7">
+        <StatCard
           label="Active Vehicles"
           value={activeVehicles}
-          hint="On active trips"
-          icon={<Truck className="h-5 w-5" />}
+          icon={<Truck className="h-4 w-4" />}
           accent="info"
         />
-        <KpiCard
-          label="Available"
+        <StatCard
+          label="Available Vehicles"
           value={available}
-          hint="Ready to dispatch"
-          icon={<CircleCheck className="h-5 w-5" />}
+          icon={<CircleCheck className="h-4 w-4" />}
           accent="success"
         />
-        <KpiCard
+        <StatCard
           label="In Maintenance"
           value={inShop}
-          hint="Currently in shop"
-          icon={<Wrench className="h-5 w-5" />}
+          icon={<Wrench className="h-4 w-4" />}
           accent="warning"
         />
-        <KpiCard
-          label="Fleet Utilization"
-          value={`${num(utilization, 0)}%`}
-          hint="Vehicles in use"
-          icon={<Gauge className="h-5 w-5" />}
-          accent="primary"
-        />
-        <KpiCard
+        <StatCard
           label="Active Trips"
           value={activeTrips}
-          hint="Dispatched now"
-          icon={<RouteIcon className="h-5 w-5" />}
+          icon={<RouteIcon className="h-4 w-4" />}
           accent="info"
         />
-        <KpiCard
+        <StatCard
           label="Pending Trips"
           value={pendingTrips}
-          hint="Awaiting dispatch"
-          icon={<Clock className="h-5 w-5" />}
+          icon={<Clock className="h-4 w-4" />}
           accent="warning"
         />
-        <KpiCard
-          label="Drivers On Duty"
+        <StatCard
+          label="Drivers on Duty"
           value={onDuty}
-          hint="Available or on trip"
-          icon={<Users className="h-5 w-5" />}
+          icon={<Users className="h-4 w-4" />}
           accent="success"
         />
-        <KpiCard
-          label="Total Fleet"
-          value={fv.length}
-          hint="Matching filters"
-          icon={<Truck className="h-5 w-5" />}
+        <StatCard
+          label="Fleet Utilization"
+          value={`${num(utilization, 0)}%`}
+          icon={<Gauge className="h-4 w-4" />}
           accent="primary"
         />
       </div>
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        <Card className="glass p-5">
-          <h3 className="font-display font-semibold">Fleet Status Distribution</h3>
-          <div className="mt-4 h-64">
-            {statusData.length ? (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={statusData}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={55}
-                    outerRadius={90}
-                    paddingAngle={3}
+      {/* Bottom — Recent Trips (left) + Vehicle Status (right) */}
+      <div className="grid gap-4 lg:grid-cols-[1fr_300px]">
+        {/* Recent Trips */}
+        <Card className="glass overflow-hidden">
+          <div className="border-b border-border/60 px-5 py-4">
+            <h3 className="font-display font-semibold">Recent Trips</h3>
+          </div>
+          {recentTrips.length === 0 ? (
+            <div className="p-10 text-center text-sm text-muted-foreground">
+              No trips yet
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border/60 text-xs text-muted-foreground">
+                  <th className="px-5 py-3 text-left font-medium">Trip</th>
+                  <th className="px-3 py-3 text-left font-medium">Vehicle</th>
+                  <th className="px-3 py-3 text-left font-medium">Driver</th>
+                  <th className="px-3 py-3 text-left font-medium">Status</th>
+                  <th className="px-5 py-3 text-left font-medium">Route</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recentTrips.map((t) => (
+                  <tr
+                    key={t.id}
+                    className="border-b border-border/40 last:border-0 transition-colors hover:bg-muted/30"
                   >
-                    {statusData.map((_, i) => (
-                      <Cell key={i} fill={COLORS[i % COLORS.length]} stroke="transparent" />
-                    ))}
-                  </Pie>
-                  <Tooltip contentStyle={tooltipStyle} />
-                </PieChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="grid h-full place-items-center text-sm text-muted-foreground">
-                No vehicles yet
-              </div>
-            )}
-          </div>
-          <div className="mt-2 flex flex-wrap justify-center gap-4">
-            {statusData.map((d, i) => (
-              <span
-                key={d.name}
-                className="flex items-center gap-1.5 text-xs text-muted-foreground"
-              >
-                <span
-                  className="h-2.5 w-2.5 rounded-full"
-                  style={{ background: COLORS[i % COLORS.length] }}
-                />
-                {d.name} ({d.value})
-              </span>
-            ))}
-          </div>
+                    <td className="px-5 py-3.5 font-mono text-xs text-muted-foreground">
+                      {t.id.slice(0, 6).toUpperCase()}
+                    </td>
+                    <td className="px-3 py-3.5">
+                      {(t as any).vehicle?.registration_number ?? "—"}
+                    </td>
+                    <td className="px-3 py-3.5">
+                      {(t as any).driver?.name ?? "—"}
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <StatusBadge status={t.status} />
+                    </td>
+                    <td className="px-5 py-3.5 text-muted-foreground">
+                      {t.source} → {t.destination}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </Card>
 
-        <Card className="glass p-5">
-          <h3 className="font-display font-semibold">Trips by Status</h3>
-          <div className="mt-4 h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={tripData}>
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="oklch(0.3 0.04 256)"
-                  vertical={false}
-                />
-                <XAxis dataKey="name" stroke="oklch(0.68 0.03 250)" fontSize={12} />
-                <YAxis stroke="oklch(0.68 0.03 250)" fontSize={12} allowDecimals={false} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  cursor={{ fill: "oklch(0.62 0.19 250 / 0.08)" }}
-                />
-                <Bar dataKey="trips" radius={[6, 6, 0, 0]} fill="oklch(0.62 0.19 250)" />
-              </BarChart>
-            </ResponsiveContainer>
+        {/* Vehicle Status panel */}
+        <Card className="glass p-6">
+          <h3 className="mb-6 font-display font-semibold">Vehicle Status</h3>
+          <div className="space-y-5">
+            {statusBarData.map((d) => (
+              <div key={d.name}>
+                <div className="mb-2 flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">{d.name}</span>
+                  <span className="font-semibold tabular-nums">{d.value}</span>
+                </div>
+                <div className="h-3 w-full overflow-hidden rounded-full bg-muted/40">
+                  <div
+                    className="h-full rounded-full transition-all duration-700"
+                    style={{
+                      width: `${Math.max(
+                        (d.value / (fv.length || 1)) * 100,
+                        d.value > 0 ? 4 : 0,
+                      )}%`,
+                      background:
+                        STATUS_COLORS[d.name] ?? "oklch(0.6 0.02 256)",
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-8">
+            <h4 className="mb-4 text-sm font-medium text-muted-foreground">
+              Trips by status
+            </h4>
+            <div className="h-36">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={["Draft", "Dispatched", "Completed", "Cancelled"].map(
+                    (s) => ({
+                      name: s.slice(0, 4),
+                      value: trips.filter((t) => t.status === s).length,
+                    }),
+                  )}
+                  barSize={20}
+                  margin={{ top: 4, right: 0, left: 0, bottom: 0 }}
+                >
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 11, fill: "oklch(0.68 0.03 250)" }}
+                    axisLine={false}
+                    tickLine={false}
+                  />
+                  <YAxis hide allowDecimals={false} />
+                  <Bar dataKey="value" radius={[4, 4, 0, 0]}>
+                    {["Draft", "Dispatched", "Completed", "Cancelled"].map(
+                      (_, i) => (
+                        <Cell
+                          key={i}
+                          fill={
+                            [
+                              "oklch(0.6 0.02 256)",
+                              "oklch(0.62 0.19 250)",
+                              "oklch(0.6 0.18 145)",
+                              "oklch(0.55 0.2 25)",
+                            ][i]
+                          }
+                        />
+                      ),
+                    )}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           </div>
         </Card>
       </div>
     </div>
   );
 }
-
-const tooltipStyle = {
-  background: "oklch(0.19 0.035 256)",
-  border: "1px solid oklch(0.3 0.04 256)",
-  borderRadius: 12,
-  color: "oklch(0.96 0.01 240)",
-  fontSize: 12,
-};
 
 function FilterSelect({
   label,
@@ -252,11 +336,11 @@ function FilterSelect({
 }) {
   return (
     <Select value={value} onValueChange={onChange}>
-      <SelectTrigger className="h-9 w-[130px]">
+      <SelectTrigger className="h-9 w-[150px]">
         <SelectValue placeholder={label} />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value="all">All {label}</SelectItem>
+        <SelectItem value="all">{label}: All</SelectItem>
         {options.map((o) => (
           <SelectItem key={o} value={o}>
             {o}
